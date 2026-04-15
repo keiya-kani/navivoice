@@ -34,8 +34,8 @@
       font-size: 1rem;
       color: #aaa;
       text-align: center;
-      max-width: 80%;
-      line-height: 1.8;
+      max-width: 85%;
+      line-height: 2;
       white-space: pre-wrap;
     }
   </style>
@@ -49,6 +49,7 @@
     const btn = document.getElementById('speakBtn');
     const status = document.getElementById('status');
 
+    // ── ボタンを押したときの処理 ──
     btn.addEventListener('click', async function () {
       btn.disabled = true;
       setStatus('現在地を取得中...');
@@ -56,26 +57,48 @@
 
       navigator.geolocation.getCurrentPosition(
         async function (position) {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
+          const myLat = position.coords.latitude;
+          const myLng = position.coords.longitude;
 
           setStatus('周辺情報を検索中...');
           speak('周辺情報を検索しています');
 
           try {
-            const places = await getNearbyPlaces(lat, lng);
+            const places = await getNearbyPlaces(myLat, myLng);
 
             if (places.length === 0) {
               speak('周辺500メートルに登録された場所が見つかりませんでした');
               setStatus('周辺情報なし');
             } else {
-              const names = places
-                .map(p => p.tags['name:ja'] || p.tags.name)
-                .filter(Boolean);
+              // 距離・方角を計算して近い順に並べる
+              const results = places
+                .map(p => {
+                  const name = p.tags['name:ja'] || p.tags.name;
+                  // wayの場合はcenterの座標、nodeの場合は直接の座標を使う
+                  const placeLat = p.center ? p.center.lat : p.lat;
+                  const placeLng = p.center ? p.center.lon : p.lon;
+                  if (!name || !placeLat || !placeLng) return null;
 
-              const text = `半径500メートルに${names.length}件あります。` + names.join('。') + '。以上です。';
-              speak(text);
-              setStatus('【見つかった場所】\n' + names.join('\n'));
+                  const distance = getDistance(myLat, myLng, placeLat, placeLng);
+                  const direction = getDirection(myLat, myLng, placeLat, placeLng);
+                  return { name, distance, direction };
+                })
+                .filter(Boolean)               // nullを除く
+                .sort((a, b) => a.distance - b.distance) // 近い順に並べる
+                .slice(0, 10);                 // 最大10件
+
+              // 読み上げ文を作る
+              const intro = `半径500メートルに${results.length}件あります。`;
+              const details = results
+                .map(r => `${r.direction}方向、約${r.distance}メートル先に${r.name}`)
+                .join('。');
+              speak(intro + details + '。以上です。');
+
+              // 画面にも表示する
+              const displayText = results
+                .map(r => `${r.direction} ${r.distance}m ／ ${r.name}`)
+                .join('\n');
+              setStatus('【周辺の場所】\n' + displayText);
             }
           } catch (e) {
             speak('情報の取得に失敗しました');
@@ -92,21 +115,21 @@
       );
     });
 
+    // ── 周辺情報をOpenStreetMapから取得する ──
     async function getNearbyPlaces(lat, lng) {
       const radius = 500;
 
-      // 店舗・施設・建物すべてを対象にする
+      // out center を使うと、建物(way)の中心座標も取得できる
       const query = `
         [out:json][timeout:20];
         (
           node(around:${radius},${lat},${lng})[amenity][name];
           node(around:${radius},${lat},${lng})[shop][name];
-          node(around:${radius},${lat},${lng})[building][name];
           way(around:${radius},${lat},${lng})[amenity][name];
           way(around:${radius},${lat},${lng})[shop][name];
           way(around:${radius},${lat},${lng})[building][name];
         );
-        out tags 20;
+        out center 20;
       `;
 
       const servers = [
@@ -128,6 +151,44 @@
       throw new Error('サーバーへの接続に失敗しました');
     }
 
+    // ── 2点間の距離をメートルで計算する ──
+    function getDistance(lat1, lng1, lat2, lng2) {
+      const R = 6371000; // 地球の半径（メートル）
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return Math.round(R * c);
+    }
+
+    // ── 方角を「北・北東・東...」に変換する ──
+    function getDirection(lat1, lng1, lat2, lng2) {
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const lat1Rad = lat1 * Math.PI / 180;
+      const lat2Rad = lat2 * Math.PI / 180;
+
+      const y = Math.sin(dLng) * Math.cos(lat2Rad);
+      const x =
+        Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+        Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLng);
+
+      const bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+
+      // 角度を8方位に変換
+      if (bearing < 22.5  || bearing >= 337.5) return '北';
+      if (bearing < 67.5)  return '北東';
+      if (bearing < 112.5) return '東';
+      if (bearing < 157.5) return '南東';
+      if (bearing < 202.5) return '南';
+      if (bearing < 247.5) return '南西';
+      if (bearing < 292.5) return '西';
+      return '北西';
+    }
+
+    // ── テキストを音声で読み上げる ──
     function speak(text) {
       window.speechSynthesis.cancel();
       const msg = new SpeechSynthesisUtterance();
@@ -137,6 +198,7 @@
       window.speechSynthesis.speak(msg);
     }
 
+    // ── 画面のステータステキストを更新する ──
     function setStatus(text) {
       status.textContent = text;
     }
