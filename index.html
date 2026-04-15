@@ -12,9 +12,11 @@
       flex-direction: column;
       justify-content: center;
       align-items: center;
-      height: 100vh;
+      min-height: 100vh;
       margin: 0;
       font-family: sans-serif;
+      padding: 20px;
+      box-sizing: border-box;
     }
     #speakBtn {
       background: #007AFF;
@@ -24,7 +26,9 @@
       border: none;
       border-radius: 20px;
       cursor: pointer;
-      margin-bottom: 40px;
+      margin-bottom: 30px;
+      width: 100%;
+      max-width: 400px;
     }
     #speakBtn:disabled {
       background: #444;
@@ -33,73 +37,115 @@
     #status {
       font-size: 1rem;
       color: #aaa;
-      text-align: center;
-      max-width: 85%;
+      text-align: left;
+      width: 100%;
+      max-width: 400px;
       line-height: 2;
       white-space: pre-wrap;
+    }
+    #compassStatus {
+      font-size: 0.85rem;
+      color: #666;
+      margin-bottom: 15px;
     }
   </style>
 </head>
 <body>
 
   <button id="speakBtn">読み上げ開始</button>
+  <p id="compassStatus">コンパス: 未取得</p>
   <p id="status">ボタンを押してください</p>
 
   <script>
+
     const btn = document.getElementById('speakBtn');
     const status = document.getElementById('status');
+    const compassStatus = document.getElementById('compassStatus');
+
+    // 現在のコンパス方位（北=0, 東=90, 南=180, 西=270）
+    let myHeading = null;
 
     // ── ボタンを押したときの処理 ──
     btn.addEventListener('click', async function () {
       btn.disabled = true;
-      setStatus('現在地を取得中...');
+      setStatus('準備中...');
+
+      // ① コンパスの許可を取得（iPhoneで方角を知るため）
+      await requestCompass();
+
       speak('現在地を取得しています');
+      setStatus('現在地を取得中...');
 
       navigator.geolocation.getCurrentPosition(
         async function (position) {
           const myLat = position.coords.latitude;
           const myLng = position.coords.longitude;
 
+          // GPSのheadingが取れた場合はそちらを優先
+          if (position.coords.heading && !isNaN(position.coords.heading)) {
+            myHeading = position.coords.heading;
+          }
+
           setStatus('周辺情報を検索中...');
           speak('周辺情報を検索しています');
 
           try {
-            const places = await getNearbyPlaces(myLat, myLng);
+            const { landmarks, places } = await getNearbyPlaces(myLat, myLng);
 
+            let allText = '';
+            let displayText = '';
+
+            // ── 歩行目印（信号・横断歩道）を先に読み上げる ──
+            if (landmarks.length > 0) {
+              const landmarkParts = landmarks
+                .map(l => {
+                  const dist = getDistance(myLat, myLng, l.lat, l.lon);
+                  const bearing = getBearing(myLat, myLng, l.lat, l.lon);
+                  const pos = formatPosition(bearing);
+                  return `${pos}、約${dist}メートル先に${l.label}`;
+                })
+                .sort();
+              allText += '歩行目印: ' + landmarkParts.join('。') + '。';
+              displayText += '【歩行目印】\n' + landmarkParts.join('\n') + '\n\n';
+            }
+
+            // ── 周辺施設・店舗を読み上げる ──
             if (places.length === 0) {
-              speak('周辺500メートルに登録された場所が見つかりませんでした');
-              setStatus('周辺情報なし');
+              allText += '周辺に施設が見つかりませんでした。';
+              displayText += '施設情報なし';
             } else {
-              // 距離・方角を計算して近い順に並べる
               const results = places
                 .map(p => {
                   const name = p.tags['name:ja'] || p.tags.name;
-                  // wayの場合はcenterの座標、nodeの場合は直接の座標を使う
                   const placeLat = p.center ? p.center.lat : p.lat;
                   const placeLng = p.center ? p.center.lon : p.lon;
                   if (!name || !placeLat || !placeLng) return null;
 
-                  const distance = getDistance(myLat, myLng, placeLat, placeLng);
-                  const direction = getDirection(myLat, myLng, placeLat, placeLng);
-                  return { name, distance, direction };
+                  const dist = getDistance(myLat, myLng, placeLat, placeLng);
+                  const bearing = getBearing(myLat, myLng, placeLat, placeLng);
+                  const category = getCategory(p.tags);
+                  const pos = formatPosition(bearing);
+                  return { name, category, dist, pos };
                 })
-                .filter(Boolean)               // nullを除く
-                .sort((a, b) => a.distance - b.distance) // 近い順に並べる
-                .slice(0, 10);                 // 最大10件
+                .filter(Boolean)
+                .sort((a, b) => a.dist - b.dist)
+                .slice(0, 10);
 
-              // 読み上げ文を作る
               const intro = `半径500メートルに${results.length}件あります。`;
+              // カテゴリ→店名の順で読む（同行援護スタイル）
               const details = results
-                .map(r => `${r.direction}方向、約${r.distance}メートル先に${r.name}`)
+                .map(r => `${r.category}の${r.name}が${r.pos}、約${r.dist}メートル先`)
                 .join('。');
-              speak(intro + details + '。以上です。');
 
-              // 画面にも表示する
-              const displayText = results
-                .map(r => `${r.direction} ${r.distance}m ／ ${r.name}`)
+              allText += intro + details + '。以上です。';
+              displayText += '【周辺の場所】\n' + results
+                .map(r => `${r.pos} ${r.dist}m ／ ${r.category}：${r.name}`)
                 .join('\n');
-              setStatus('【周辺の場所】\n' + displayText);
             }
+
+            speak(allText);
+            setStatus(displayText);
+
           } catch (e) {
             speak('情報の取得に失敗しました');
             setStatus('エラー: ' + e.message);
@@ -115,11 +161,153 @@
       );
     });
 
+    // ── コンパスの許可を取得してheadingを監視する ──
+    async function requestCompass() {
+      try {
+        // iOS 13+ はユーザー操作のタイミングでpermissionリクエストが必要
+        if (typeof DeviceOrientationEvent !== 'undefined' &&
+            typeof DeviceOrientationEvent.requestPermission === 'function') {
+          const permission = await DeviceOrientationEvent.requestPermission();
+          if (permission !== 'granted') {
+            compassStatus.textContent = 'コンパス: 不許可（方角は東西南北で読み上げます）';
+            return;
+          }
+        }
+
+        // コンパスデータを1回取得する
+        await new Promise((resolve) => {
+          const handler = (e) => {
+            // iOSは webkitCompassHeading で北からの角度が取れる
+            if (e.webkitCompassHeading != null) {
+              myHeading = e.webkitCompassHeading;
+              compassStatus.textContent = 'コンパス: 取得済み（クロックポジションで読み上げ）';
+            } else if (e.alpha != null) {
+              myHeading = (360 - e.alpha) % 360;
+              compassStatus.textContent = 'コンパス: 取得済み（クロックポジションで読み上げ）';
+            }
+            window.removeEventListener('deviceorientation', handler);
+            window.removeEventListener('deviceorientationabsolute', handler);
+            resolve();
+          };
+          window.addEventListener('deviceorientationabsolute', handler);
+          window.addEventListener('deviceorientation', handler);
+          // 3秒でタイムアウト
+          setTimeout(() => {
+            window.removeEventListener('deviceorientation', handler);
+            window.removeEventListener('deviceorientationabsolute', handler);
+            if (myHeading === null) {
+              compassStatus.textContent = 'コンパス: 未対応（方角は東西南北で読み上げます）';
+            }
+            resolve();
+          }, 3000);
+        });
+      } catch (e) {
+        compassStatus.textContent = 'コンパス: エラー';
+      }
+    }
+
+    // ── 方位をクロックポジションまたは東西南北で返す ──
+    function formatPosition(bearing) {
+      if (myHeading !== null) {
+        // クロックポジション: 自分の向きを12時として相対的な時計位置を計算
+        const relative = (bearing - myHeading + 360) % 360;
+        const hour = Math.round(relative / 30) % 12;
+        return `${hour === 0 ? 12 : hour}時の方向`;
+      } else {
+        // コンパスが使えない場合は東西南北で返す
+        return bearingToDirection(bearing) + '方向';
+      }
+    }
+
+    // ── 2点間の角度（北=0, 東=90）を計算する ──
+    function getBearing(lat1, lng1, lat2, lng2) {
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const lat1R = lat1 * Math.PI / 180;
+      const lat2R = lat2 * Math.PI / 180;
+      const y = Math.sin(dLng) * Math.cos(lat2R);
+      const x = Math.cos(lat1R) * Math.sin(lat2R) - Math.sin(lat1R) * Math.cos(lat2R) * Math.cos(dLng);
+      return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }
+
+    // ── 角度を8方位の文字に変換する ──
+    function bearingToDirection(bearing) {
+      if (bearing < 22.5  || bearing >= 337.5) return '北';
+      if (bearing < 67.5)  return '北東';
+      if (bearing < 112.5) return '東';
+      if (bearing < 157.5) return '南東';
+      if (bearing < 202.5) return '南';
+      if (bearing < 247.5) return '南西';
+      if (bearing < 292.5) return '西';
+      return '北西';
+    }
+
+    // ── 2点間の距離をメートルで計算する ──
+    function getDistance(lat1, lng1, lat2, lng2) {
+      const R = 6371000;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+      return Math.round(6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+    }
+
+    // ── タグからカテゴリ名（日本語）を返す ──
+    function getCategory(tags) {
+      const amenityMap = {
+        convenience:       'コンビニ',
+        supermarket:       'スーパー',
+        pharmacy:          '薬局',
+        hospital:          '病院',
+        clinic:            'クリニック',
+        doctors:           'クリニック',
+        dentist:           '歯科',
+        restaurant:        'レストラン',
+        fast_food:         'ファストフード',
+        cafe:              'カフェ',
+        bar:               'バー',
+        bank:              '銀行',
+        atm:               'ATM',
+        post_office:       '郵便局',
+        school:            '学校',
+        university:        '大学',
+        kindergarten:      '幼稚園',
+        bus_stop:          'バス停',
+        fuel:              'ガソリンスタンド',
+        parking:           '駐車場',
+        police:            '警察署',
+        fire_station:      '消防署',
+        library:           '図書館',
+        toilets:           'トイレ',
+        place_of_worship:  '寺社',
+        community_centre:  'コミュニティセンター',
+      };
+      const shopMap = {
+        clothes:           '衣料品店',
+        electronics:       '家電量販店',
+        bakery:            'パン屋',
+        books:             '本屋',
+        hairdresser:       '美容院',
+        optician:          '眼鏡店',
+        florist:           '花屋',
+        sports:            'スポーツ用品店',
+        mobile_phone:      '携帯電話ショップ',
+        department_store:  'デパート',
+        hardware:          'ホームセンター',
+        convenience:       'コンビニ',
+        supermarket:       'スーパー',
+        pharmacy:          '薬局',
+        variety_store:     '百円ショップ',
+      };
+      if (tags.amenity && amenityMap[tags.amenity]) return amenityMap[tags.amenity];
+      if (tags.shop    && shopMap[tags.shop])        return shopMap[tags.shop];
+      if (tags.amenity) return '施設';
+      if (tags.shop)    return '店舗';
+      return '建物';
+    }
+
     // ── 周辺情報をOpenStreetMapから取得する ──
     async function getNearbyPlaces(lat, lng) {
       const radius = 500;
-
-      // out center を使うと、建物(way)の中心座標も取得できる
       const query = `
         [out:json][timeout:20];
         (
@@ -128,8 +316,10 @@
           way(around:${radius},${lat},${lng})[amenity][name];
           way(around:${radius},${lat},${lng})[shop][name];
           way(around:${radius},${lat},${lng})[building][name];
+          node(around:200,${lat},${lng})[highway=traffic_signals];
+          node(around:200,${lat},${lng})[highway=crossing];
         );
-        out center 20;
+        out center 30;
       `;
 
       const servers = [
@@ -140,52 +330,27 @@
       for (const server of servers) {
         try {
           const res = await fetch(server + '?data=' + encodeURIComponent(query));
-          if (!res.ok) throw new Error('HTTPエラー: ' + res.status);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
           const data = await res.json();
-          return data.elements;
+
+          // 歩行目印と施設を分けて返す
+          const landmarks = data.elements
+            .filter(e => e.tags && (e.tags.highway === 'traffic_signals' || e.tags.highway === 'crossing'))
+            .map(e => ({
+              lat: e.lat,
+              lon: e.lon,
+              label: e.tags.highway === 'traffic_signals' ? '信号機' : '横断歩道'
+            }));
+
+          const places = data.elements
+            .filter(e => e.tags && !e.tags.highway && (e.tags.name || e.tags['name:ja']));
+
+          return { landmarks, places };
         } catch (e) {
           continue;
         }
       }
-
       throw new Error('サーバーへの接続に失敗しました');
-    }
-
-    // ── 2点間の距離をメートルで計算する ──
-    function getDistance(lat1, lng1, lat2, lng2) {
-      const R = 6371000; // 地球の半径（メートル）
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLng = (lng2 - lng1) * Math.PI / 180;
-      const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLng / 2) * Math.sin(dLng / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return Math.round(R * c);
-    }
-
-    // ── 方角を「北・北東・東...」に変換する ──
-    function getDirection(lat1, lng1, lat2, lng2) {
-      const dLng = (lng2 - lng1) * Math.PI / 180;
-      const lat1Rad = lat1 * Math.PI / 180;
-      const lat2Rad = lat2 * Math.PI / 180;
-
-      const y = Math.sin(dLng) * Math.cos(lat2Rad);
-      const x =
-        Math.cos(lat1Rad) * Math.sin(lat2Rad) -
-        Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLng);
-
-      const bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-
-      // 角度を8方位に変換
-      if (bearing < 22.5  || bearing >= 337.5) return '北';
-      if (bearing < 67.5)  return '北東';
-      if (bearing < 112.5) return '東';
-      if (bearing < 157.5) return '南東';
-      if (bearing < 202.5) return '南';
-      if (bearing < 247.5) return '南西';
-      if (bearing < 292.5) return '西';
-      return '北西';
     }
 
     // ── テキストを音声で読み上げる ──
@@ -198,11 +363,11 @@
       window.speechSynthesis.speak(msg);
     }
 
-    // ── 画面のステータステキストを更新する ──
+    // ── 画面のステータスを更新する ──
     function setStatus(text) {
       status.textContent = text;
     }
-  </script>
 
+  </script>
 </body>
 </html>
