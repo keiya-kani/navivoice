@@ -70,7 +70,12 @@
       btn.disabled = true;
       setStatus('準備中...');
 
-      // ① コンパスの許可を取得（iPhoneで方角を知るため）
+      // ① iOSのSafari対策: タップ直後に音声を初期化する（これをしないと読み上げない）
+      const unlock = new SpeechSynthesisUtterance('');
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(unlock);
+
+      // ② コンパスの許可を取得（iPhoneで方角を知るため）
       await requestCompass();
 
       speak('現在地を取得しています');
