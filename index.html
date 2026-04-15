@@ -102,10 +102,11 @@
                   const dist = getDistance(myLat, myLng, l.lat, l.lon);
                   const bearing = getBearing(myLat, myLng, l.lat, l.lon);
                   const pos = formatPosition(bearing);
-                  return `${pos}、約${dist}メートル先に${l.label}`;
+                  // 句点で区切って聞きやすくする
+                  return `${l.label}。${pos}。${dist}メートル。`;
                 })
                 .sort();
-              allText += '歩行目印: ' + landmarkParts.join('。') + '。';
+              allText += '歩行目印をお知らせします。' + landmarkParts.join('') + '';
               displayText += '【歩行目印】\n' + landmarkParts.join('\n') + '\n\n';
             }
 
@@ -128,18 +129,18 @@
                   return { name, category, dist, pos };
                 })
                 .filter(Boolean)
-                .sort((a, b) => a.dist - b.dist)
+                .sort((a, b) => a.dist - b.dist) // 近い順
                 .slice(0, 10);
 
-              const intro = `半径500メートルに${results.length}件あります。`;
-              // カテゴリ→店名の順で読む（同行援護スタイル）
+              const intro = `半径500メートルに${results.length}件あります。近い順にお知らせします。`;
+              // 句点で区切って1情報ずつ聞きやすくする
               const details = results
-                .map(r => `${r.category}の${r.name}が${r.pos}、約${r.dist}メートル先`)
-                .join('。');
+                .map(r => `${r.category}の${r.name}。${r.pos}。${r.dist}メートル。`)
+                .join('');
 
-              allText += intro + details + '。以上です。';
+              allText += intro + details + '以上です。';
               displayText += '【周辺の場所】\n' + results
-                .map(r => `${r.pos} ${r.dist}m ／ ${r.category}：${r.name}`)
+                .map(r => `${r.dist}m ${r.pos} ／ ${r.category}：${r.name}`)
                 .join('\n');
             }
 
