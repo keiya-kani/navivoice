@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NaviVoice</title>
+  <style>
+    body {
+      background: #000;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      font-family: sans-serif;
+    }
+    #speakBtn {
+      background: #007AFF;
+      color: white;
+      font-size: 2rem;
+      padding: 40px 60px;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+      margin-bottom: 40px;
+    }
+    #speakBtn:disabled {
+      background: #444;
+      cursor: not-allowed;
+    }
+    #status {
+      font-size: 1rem;
+      color: #aaa;
+      text-align: center;
+      max-width: 80%;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+  <button id="speakBtn">読み上げ開始</button>
+  <p id="status">ボタンを押してください</p>
+
+  <script>
+    const btn = document.getElementById('speakBtn');
+    const status = document.getElementById('status');
+
+    btn.addEventListener('click', async function () {
+      btn.disabled = true;
+      setStatus('現在地を取得中...');
+      speak('現在地を取得しています');
+
+      navigator.geolocation.getCurrentPosition(
+        async function (position) {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+
+          setStatus('周辺情報を検索中...');
+          speak('周辺情報を検索しています');
+
+          try {
+            const places = await getNearbyPlaces(lat, lng);
+
+            if (places.length === 0) {
+              speak('周辺500メートルに登録された場所が見つかりませんでした');
+              setStatus('周辺情報なし');
+            } else {
+              const names = places
+                .map(p => p.tags['name:ja'] || p.tags.name)
+                .filter(Boolean);
+
+              const text = `半径500メートルに${names.length}件あります。` + names.join('。') + '。以上です。';
+              speak(text);
+              setStatus('【見つかった場所】\n' + names.join('\n'));
+            }
+          } catch (e) {
+            speak('情報の取得に失敗しました');
+            setStatus('エラー: ' + e.message);
+          }
+
+          btn.disabled = false;
+        },
+        function (err) {
+          speak('現在地の取得に失敗しました');
+          setStatus('位置情報エラー: ' + err.message);
+          btn.disabled = false;
+        }
+      );
+    });
+
+    async function getNearbyPlaces(lat, lng) {
+      const radius = 500;
+
+      // 店舗・施設・建物すべてを対象にする
+      const query = `
+        [out:json][timeout:20];
+        (
+          node(around:${radius},${lat},${lng})[amenity][name];
+          node(around:${radius},${lat},${lng})[shop][name];
+          node(around:${radius},${lat},${lng})[building][name];
+          way(around:${radius},${lat},${lng})[amenity][name];
+          way(around:${radius},${lat},${lng})[shop][name];
+          way(around:${radius},${lat},${lng})[building][name];
+        );
+        out tags 20;
+      `;
+
+      const servers = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter'
+      ];
+
+      for (const server of servers) {
+        try {
+          const res = await fetch(server + '?data=' + encodeURIComponent(query));
+          if (!res.ok) throw new Error('HTTPエラー: ' + res.status);
+          const data = await res.json();
+          return data.elements;
+        } catch (e) {
+          continue;
+        }
+      }
+
+      throw new Error('サーバーへの接続に失敗しました');
+    }
+
+    function speak(text) {
+      window.speechSynthesis.cancel();
+      const msg = new SpeechSynthesisUtterance();
+      msg.text = text;
+      msg.lang = 'ja-JP';
+      msg.rate = 0.9;
+      window.speechSynthesis.speak(msg);
+    }
+
+    function setStatus(text) {
+      status.textContent = text;
+    }
+  </script>
+
+</body>
+</html>
