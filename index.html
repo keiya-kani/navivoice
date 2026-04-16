@@ -100,19 +100,26 @@
             let allText = '';
             let displayText = '';
 
-            // ── 歩行目印（信号・横断歩道）を先に読み上げる ──
+            // ── 歩行目印（交差点・横断歩道）を先に読み上げる ──
             if (landmarks.length > 0) {
               const landmarkParts = landmarks
                 .map(l => {
                   const dist = getDistance(myLat, myLng, l.lat, l.lon);
                   const bearing = getBearing(myLat, myLng, l.lat, l.lon);
                   const pos = formatPosition(bearing);
-                  // 句点で区切って聞きやすくする
-                  return `${l.label}。${pos}。${dist}メートル。`;
+                  return { label: l.label, dist, pos };
                 })
-                .sort();
-              allText += '歩行目印をお知らせします。' + landmarkParts.join('') + '';
-              displayText += '【歩行目印】\n' + landmarkParts.join('\n') + '\n\n';
+                .sort((a, b) => a.dist - b.dist); // 近い順に並べる
+
+              // 距離を最初に読む（Soundscapeの課題を解決）
+              const landmarkText = landmarkParts
+                .map(l => `約${l.dist}メートル先に${l.label}。${l.pos}。`)
+                .join('');
+
+              allText += '歩行目印をお知らせします。' + landmarkText;
+              displayText += '【歩行目印】\n' + landmarkParts
+                .map(l => `${l.dist}m先 ${l.pos} ／ ${l.label}`)
+                .join('\n') + '\n\n';
             }
 
             // ── 周辺施設・店舗を読み上げる ──
@@ -314,6 +321,8 @@
     // ── 周辺情報をOpenStreetMapから取得する ──
     async function getNearbyPlaces(lat, lng) {
       const radius = 500;
+      // 交差点の検索範囲は300mに広げる（歩行判断に重要なため）
+      const landmarkRadius = 300;
       const query = `
         [out:json][timeout:20];
         (
@@ -322,10 +331,12 @@
           way(around:${radius},${lat},${lng})[amenity][name];
           way(around:${radius},${lat},${lng})[shop][name];
           way(around:${radius},${lat},${lng})[building][name];
-          node(around:200,${lat},${lng})[highway=traffic_signals];
-          node(around:200,${lat},${lng})[highway=crossing];
+          node(around:${landmarkRadius},${lat},${lng})[highway=traffic_signals];
+          node(around:${landmarkRadius},${lat},${lng})[highway=crossing];
+          node(around:${landmarkRadius},${lat},${lng})[highway=stop];
+          node(around:${landmarkRadius},${lat},${lng})[junction=yes];
         );
-        out center 30;
+        out center 40;
       `;
 
       const servers = [
@@ -339,17 +350,23 @@
           if (!res.ok) throw new Error('HTTP ' + res.status);
           const data = await res.json();
 
-          // 歩行目印と施設を分けて返す
+          // 歩行目印のラベルを決める
+          const landmarkTags = ['traffic_signals', 'crossing', 'stop', 'yes'];
           const landmarks = data.elements
-            .filter(e => e.tags && (e.tags.highway === 'traffic_signals' || e.tags.highway === 'crossing'))
+            .filter(e => e.tags && (
+              e.tags.highway === 'traffic_signals' ||
+              e.tags.highway === 'crossing' ||
+              e.tags.highway === 'stop' ||
+              e.tags.junction === 'yes'
+            ))
             .map(e => ({
               lat: e.lat,
               lon: e.lon,
-              label: e.tags.highway === 'traffic_signals' ? '信号機' : '横断歩道'
+              label: getLandmarkLabel(e.tags)
             }));
 
           const places = data.elements
-            .filter(e => e.tags && !e.tags.highway && (e.tags.name || e.tags['name:ja']));
+            .filter(e => e.tags && !e.tags.highway && !e.tags.junction && (e.tags.name || e.tags['name:ja']));
 
           return { landmarks, places };
         } catch (e) {
@@ -357,6 +374,18 @@
         }
       }
       throw new Error('サーバーへの接続に失敗しました');
+    }
+
+    // ── 歩行目印のラベルを日本語で返す ──
+    function getLandmarkLabel(tags) {
+      if (tags.highway === 'traffic_signals') return '信号のある交差点';
+      if (tags.highway === 'crossing') {
+        if (tags.crossing === 'traffic_signals') return '信号のある横断歩道';
+        return '横断歩道';
+      }
+      if (tags.highway === 'stop')  return '一時停止の交差点';
+      if (tags.junction === 'yes')  return '交差点';
+      return '交差点';
     }
 
     // ── テキストを音声で読み上げる ──
