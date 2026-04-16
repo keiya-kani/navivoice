@@ -75,20 +75,25 @@
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(unlock);
 
-      // ② コンパスの許可を取得（iPhoneで方角を知るため）
+      // ② コンパスの許可を取得（GPS headingが使えない場合の保険）
       await requestCompass();
 
-      speak('現在地を取得しています');
-      setStatus('現在地を取得中...');
+      speak('現在地と進行方向を取得しています。少し歩いてください。');
+      setStatus('現在地と進行方向を取得中...\n少し歩くと方向が確定します');
+
+      // ③ watchPositionで歩行方向（GPS heading）を取得する
+      //    コンパスより正確。動いているときだけ取得できる
+      await getGPSHeading();
 
       navigator.geolocation.getCurrentPosition(
         async function (position) {
           const myLat = position.coords.latitude;
           const myLng = position.coords.longitude;
 
-          // GPSのheadingが取れた場合はそちらを優先
+          // GPS移動方向が取れていればそちらを使う（最優先）
           if (position.coords.heading && !isNaN(position.coords.heading)) {
             myHeading = position.coords.heading;
+            compassStatus.textContent = 'GPS方向: 取得済み（高精度）';
           }
 
           setStatus('周辺情報を検索中...');
@@ -173,6 +178,52 @@
         }
       );
     });
+
+    // ── 歩行方向をGPSから取得する（コンパスより正確）──
+    function getGPSHeading() {
+      return new Promise((resolve) => {
+        let watchId;
+        let attempts = 0;
+
+        watchId = navigator.geolocation.watchPosition(
+          function (position) {
+            const h = position.coords.heading;
+            attempts++;
+
+            // headingが有効な値で取れたら確定
+            if (h !== null && !isNaN(h) && h >= 0) {
+              myHeading = h;
+              compassStatus.textContent = 'GPS方向: 取得済み（高精度）';
+              navigator.geolocation.clearWatch(watchId);
+              resolve();
+            }
+
+            // 5回試してもGPS headingが取れなければコンパスで代用
+            if (attempts >= 5) {
+              navigator.geolocation.clearWatch(watchId);
+              if (myHeading === null) {
+                compassStatus.textContent = '方向: コンパスで代用（精度は低め）';
+              }
+              resolve();
+            }
+          },
+          function () {
+            navigator.geolocation.clearWatch(watchId);
+            resolve();
+          },
+          { enableHighAccuracy: true }
+        );
+
+        // 8秒でタイムアウト
+        setTimeout(() => {
+          navigator.geolocation.clearWatch(watchId);
+          if (myHeading === null) {
+            compassStatus.textContent = '方向: 取得できませんでした（東西南北で読み上げます）';
+          }
+          resolve();
+        }, 8000);
+      });
+    }
 
     // ── コンパスの許可を取得してheadingを監視する ──
     async function requestCompass() {
